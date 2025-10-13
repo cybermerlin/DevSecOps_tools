@@ -1,32 +1,43 @@
-#!/bin/bash
+#!/bin/sh
+set -eu
+LANG=en_US.UTF-8
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+EUID=$(id -u)
+
+
+# import
+. ${SCRIPT_DIR}/../common/colors.sh
+. ${SCRIPT_DIR}/../common/progress.sh
+. ${SCRIPT_DIR}/../common/handler.sh
+
 
 # Function to display disk usage
-# $dir - start directory count
-# $max_depth - Использование: $0 <директория> <максимальный_уровень_вложенности>
-# $size_filter - Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб
-# $name_filter - Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени
+# $_dir - start directory count
+# $_max_depth - Использование: $0 <директория> <максимальный_уровень_вложенности>
+# $_size_filter - Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб
+# $_name_filter - Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени
 display_disk_usage() {
-    echo -e "\nAnalyze disk usage:"
-    df -h /
-
-    local dir="$1"
-    local max_depth="$2"
-    local size_filter="$3"
-    local name_filter="$4"
+    info "Analyze disk usage..."
+    local _dir="$1"
+    local _max_depth="$2"
+    local _size_filter="$3"
+    local _name_filter="$4"
+    
+    df -h $_dir
     
     # Проверка аргументов
-    if [ -z "$dir" ] || [ -z "$max_depth" ]; then
+    if [ -z "$_dir" ] || [ -z "$_max_depth" ]; then
         echo "Использование: $0 <директория> <максимальный_уровень_вложенности>"
         echo "Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб"
         echo "Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени"
         return 1
     fi
-    if [ ! -d "$dir" ]; then
-        echo "Ошибка: Директория $dir не существует"
+    if [ ! -d "$_dir" ]; then
+        echo "Ошибка: Директория $_dir не существует"
         return 1
     fi
 
-    time python3 find.py "$dir" "$max_depth" "$size_filter" "$name_filter" | while read -r line; do
+    python3 ${SCRIPT_DIR}/find.py "$_dir" "$_max_depth" "$_size_filter" "$_name_filter" | while read -r line; do
         echo "$line"
     done
 }
@@ -35,61 +46,60 @@ display_disk_usage() {
 main() {
     # Проверка прав суперпользователя
     if [ "$EUID" -ne 0 ]; then
-        echo "Пожалуйста, запустите этот скрипт с правами суперпользователя:"
-        echo "sudo $0 $*"
+        warning "Пожалуйста, запустите этот скрипт с правами суперпользователя: \n sudo $0 $*"
         exit 1
     fi
 
-    echo "Remove apt and another old and garbage, temporary, logs"
+    info "Remove apt and another old and garbage, temporary, logs"
     askExit
     df -h /
     
     apt autoremove -y --purge
-    apt clean -y
-    apt autoclean -y
-
-
-    # Removes old revisions of snaps
-    # CLOSE ALL SNAPS BEFORE RUNNING THIS
-    set -eu
-    snap list --all | awk '/disabled/{print $1, $3}' | \
+    
+    info "[ start ] APT packages cache cleanup..." 10
+    du -sh /var/cache/apt
+    # sudo rm -rf /var/cache/apt/*
+    apt autoclean
+    apt -s clean
+    du -sh /var/cache/apt
+    success "[ finished ] APT packages cache cleanup..." 10
+    
+    info "[ start ] snapd cache cleaning..." 10
+    du -sh /var/lib/snapd/snaps
+    snap list --all | awk '/disabled/{print $1, $3}' |
         while read snapname revision; do
             snap remove "$snapname" --revision="$revision"
         done
+    du -sh /var/lib/snapd/snaps
+    success "[ finished ] snapd cache cleaning..." 10
 
-    echo "Removing old kernels..."
+    info "[ start ] Removing old kernels..." 10
     current_kernel=$(uname -r | sed "s/-generic//")
     dpkg -l 'linux-*' | sed "/^ii/!d;/"$current_kernel"/d;s/^[^ ]* [^ ]* \([^ ]*\).*/\1/;/[0-9]/!d" | xargs apt-get -y purge
+    success "[ finished ] Removing old kernels..." 10
 
+    info "[ start ] remove unnecessary files..." 10
     # Clear temporary files
-    echo "Clearing temporary files..."
-    rm -rf /tmp/*
-    rm -rf /var/tmp/*
-    rm -rf /etc/apk/cache/* /var/cache/* /var/lib/apt/lists/* /var/log/* /usr/share/doc/* /usr/share/man/*
-
+    info "Clearing temporary files..." 20
+    rm -rf /tmp/* /var/tmp/* /etc/apk/cache/* /var/cache/* /var/lib/apt/lists/* /var/log/* /usr/share/doc/* /usr/share/man/*
     # Empty trash
-    echo "Emptying trash..."
+    info "Emptying trash..." 20
     rm -rf ~/.local/share/Trash/*
-
     # Remove thumbnail cache
-    echo "Removing thumbnail cache..."
+    info "Removing thumbnail cache..." 20
     rm -rf ~/.cache/thumbnails/*
+    success "[ finished ] remove unnecessary files..." 10
 
-    LC_ALL=C dpkg -l | awk '/^rc/ {print $2}' | xargs sudo dpkg --purge --pending
+    info "[ start ] dpkg cleanup..." 10
+    LC_ALL=C dpkg -l | awk '/^rc/ {print $2}' | xargs sudo dpkg --purge
+    sudo dpkg --purge --pending
+    success "[ finished ] dpkg cleanup..." 10
 
-    #Removes old revisions of snaps
-    #CLOSE ALL SNAPS BEFORE RUNNING THIS
-    set -eu
-    LANG=en_US.UTF-8
-    snap list --all | awk '/disabled/{print $1, $3}' | while read snapname revision; do
-        echo "$snapname" "$revision"
-        snap remove "$snapname" --revision="$revision"
-    done
-
-
-    echo "journal systemd"
+    info "journal systemd" 20
     journalctl --disk-usage
     journalctl --vacuum-time=7d
+
+    warning "\nFor WSL u can use shrinking: `wsl --shutdown; optimize-vhd -Path D:\vmx\wsl.ubuntu.desktop\ext4.vhdx -Mode full`"
 
     df -h /
 }
@@ -178,37 +188,65 @@ dockerCln() {
 }
 
 askExit() {
-    echo -e "\nStop? [y/n]"
+    ask "Stop? [y/n]"
     read -r answer
     if [ "$answer" = "y" ]; then exit 0; fi
 }
 
 
-while true; do
-    # Display menu
-    echo -e "\nДобро пожаловать в скрипт очистки ненужных файлов!"
-    echo "Please select a function to execute:"
-    echo -e "\e[31m\t1)\e[32m calculate disk usage"
-    echo -e "\e[31m\t2)\e[32m main"
-    echo -e "\e[31m\t3)\e[32m docker"
-    echo -e "\e[31m\t4)\e[32m cruft cleanup from 'missing: dpkg' group"
-    echo -e "\e[31m\t5)\e[32m cruft analyze"
-    echo -e "\e[31m\t6)\e[32m compact FS"
-    echo -e "\e[31m\t7)\e[32m exit"
-    echo -e "\e[0m"
-    # Read user input
-    read -p "Enter a number: " choice
+#region --- for the interactive menu ---
+compact() {
+    handler 'e4defrag /dev/*' "Defragmentation disks"
+}
+disk_usage() {
+    echo "Put your arguments:"
+    echo "_dir - start directory count"
+    echo "_max_depth - Использование: 0 <директория> <максимальный_уровень_вложенности>"
+    echo "_size_filter - Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб"
+    echo "_name_filter - Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени"
+    echo "Example: / 1 >1G"
+    read -p ":" args
     echo ""
+    set -- $args
 
-    # Execute the chosen function
-    case $choice in
-        1) display_disk_usage  "/" "1" ">1G" ;;
-        2) main ;;
-        3) sudo -u "$SUDO_USER" bash -c "$(declare -f dockerCln); dockerCln" ;;
-        4) cruftCln ;;
-        5) cruftAnal ;;
-        6) e4defrag /dev/* ;;
-        7) exit 0 ;;
-        *) echo "Invalid input. Please enter a number from the list above" ;;
-    esac
-done
+    display_disk_usage "${1:-}" "${2:-}" "${3:-}" "${4:-}"
+}
+#endregion ======
+
+
+_arg="${1:-}"
+case "${_arg}" in
+    clean) main ;;
+    disk_usage) display_disk_usage  "/" "1" ">1G" ;;
+    compact) compact ;;
+
+    *)
+        while true; do
+            # Display menu
+            echo "\nДобро пожаловать в скрипт очистки ненужных файлов!"
+            echo "Please select a function to execute:"
+            echo "$RED\t 1) $GREEN calculate disk usage"
+            echo "$RED\t 2) $GREEN main cleanup function"
+            echo "$RED\t 3) $GREEN GC docker's waste products"
+            echo "$RED\t 4) $GREEN cruft cleanup from 'missing: dpkg' group"
+            echo "$RED\t 5) $GREEN cruft analyze"
+            echo "$RED\t 6) $GREEN compact FS"
+            echo "$RED\t 7) $GREEN exit"
+            echo "$NC"
+            # Read user input
+            read -p "Enter a number: " choice
+            echo ""
+
+            # Execute the chosen function
+            case $choice in
+                1) disk_usage ;;
+                2) main ;;
+                3) sudo -u "$SUDO_USER" bash -c "$(declare -f dockerCln); dockerCln" ;;
+                4) cruftCln ;;
+                5) cruftAnal ;;
+                6) compact ;;
+                7) exit 0 ;;
+                *) echo "Invalid input. Please enter a number from the list above" ;;
+            esac
+        done ;;
+esac
