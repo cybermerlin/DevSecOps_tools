@@ -113,13 +113,13 @@ upgrade() {
   fi
 }
 
-inst_base() {
-  warning "Do not forget to press N on question about replacing updatedb.conf from installation package!"
-  
-  sudo apt install -y htop mc git plocate screen || { exit 1; }
-  sudo updatedb&
-  
+git_prep() {
+  info "Check and generate ssh keys for git" 20
+  mkdir -p ~/.ssh
+  [ -d "./secrets" ] && cp -r ./secrets/.ssh/* ~/.ssh/ || ssh-keygen -t rsa -b 4096 -C ${user.email} -N "" -f ~/.ssh/github;
   . ./secrets.sh
+
+  info "Configuring git Credential Manager" 20
   git config --global user.email ${user.email}
   git config --global user.name ${user.name}
   git config --global credential.credentialStore cache
@@ -128,6 +128,57 @@ inst_base() {
   git config --global credential.gitHubAccountFiltering "false"
   git config --global credential.gitLabAuthModes "browser"
 
+  if [ -z pgrep -a ssh-agent ] then
+    info "running ssh-agent service..." 20
+    
+    if [ -z systemctl --user list-unit-files | grep ssh ] then
+      info "making ssh-agen.service..." 20;
+
+      mkdir -p ~/.config/systemd/user/
+      tee ~/.config/systemd/user/ssh-agent.service > /dev/null < EOF
+[Unit]
+Description=SSH key agent
+Wants=default.target
+
+[Service]
+Type=simple
+Environment=SSH_AUTH_SOCK=%t/ssh-agent.socket
+ExecStart=/usr/bin/ssh-agent -D -a $SSH_AUTH_SOCK
+
+[Install]
+WantedBy=default.target
+EOF
+      systemctl --user enable ssh-agent
+      systemctl --user start ssh-agent
+    fi
+    
+    # Auto SSH-AUTH_SOCK setup
+    if [ -z "$SSH_AUTH_SOCK" ]; then
+        info "have no SSH_AUTH_SOCK" 20
+        # Try XDG_RUNTIME_DIR first (systemd user service)
+        if [ -n "$XDG_RUNTIME_DIR" ] && [ -S "$XDG_RUNTIME_DIR/ssh-agent.socket" ]; then
+            info 'have no $XDG_RUNTIME_DIR/ssh-agent.socket' 20
+            export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+        # Try to find any existing ssh-agent socket
+        elif sockets=$(find /tmp/ssh-* -user "$USER" -name "agent.*" 2>/dev/null); then
+            export SSH_AUTH_SOCK=$(echo "$sockets" | head -n1)
+        # Fallback: start new agent if nothing found
+        # else
+        #     eval "$(ssh-agent -s)" > /dev/null
+        fi
+    fi
+    # eval "$(ssh-agent -s)"
+  fi
+  ssh-add ~/.ssh/github
+}
+
+inst_base() {
+  warning "Do not forget to press N on question about replacing updatedb.conf from installation package!"
+  
+  sudo apt install -y htop mc git plocate screen || { exit 1; }
+  sudo updatedb&
+  handler 'git_prep' "Prepare Git..." 10
+  
   handler 'clean main' "Cleaning after installation" 10
 }
 
