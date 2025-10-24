@@ -1,0 +1,14 @@
+[wsl2]
+swap=0
+localhostForwarding=true
+memory=8GB
+processors=14
+kernelCommandLine = cgroup_no_v1=all
+defaultVhdSize = 55GB
+dnsTunneling=true
+guiApplications = true
+firewall = true
+
+[experimental]
+sparseVhd = true
+autoMemoryReclaim = dropcache
