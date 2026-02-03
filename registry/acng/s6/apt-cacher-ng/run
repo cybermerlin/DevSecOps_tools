@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+
+exec gosu "${PUID}:${PGID}" /usr/sbin/apt-cacher-ng -c /etc/apt-cacher-ng SocketPath=/var/run/apt-cacher-ng/socket pidfile=/var/run/apt-cacher-ng/pid foreground=1

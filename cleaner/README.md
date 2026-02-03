@@ -1,10 +1,12 @@
 # Cleaner for Ubuntu
 
-- [find](find.py) - function to find by:
-    - name
-    - size
+## [find](find.py)
+
+function to find by:
+  - name
+  - size
   
-  Features:
+  **Features**:
   + Displays results as a directory tree in the terminal
   + Logs output in JSON format
   + Multithreaded execution
@@ -12,16 +14,19 @@
     
     ![alt text](image.png)
 
-  Arguments:
+  **Arguments**:
   - **path** -- root dir to begin search
   - **max_depth** -- max search depth (recursion level)
   - **size_filter** -- size filter (e.g., '>2G'  for files larger than 2GB)
   - **name_filter** -- directory name pattern filter
   - **exclude_dirs** -- list of directories to exclude from search
-- [freeup](freeup.sh) - function to clean up system.
+
+## [freeup](freeup.sh)
+
+function to clean up the system.
   
-  Features:
-  + Interactive menu for action selection
+**Features**:
+  + Interactive menu for selecting actions
 
     ![alt text](image-1.png)
   + calculating disk usage (before cleanup to compare a result)

@@ -1,3 +1,7 @@
 /secrets
 secrets.sh
 *.log
+.trunk
+.env
+*.swp
+.DS_Store

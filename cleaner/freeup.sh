@@ -1,111 +1,133 @@
-#!/bin/bash
+#!/usr/bin/env sh
+set -eu
+LANG=en_US.UTF-8
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+EUID=$(id -u)
+
+
+# import
+. ${SCRIPT_DIR}/../common/colors.sh
+. ${SCRIPT_DIR}/../common/progress.sh
+. ${SCRIPT_DIR}/../common/handler.sh
+
 
 # Function to display disk usage
-# $dir - start directory count
-# $max_depth - Использование: $0 <директория> <максимальный_уровень_вложенности>
-# $size_filter - Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб
-# $name_filter - Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени
+# $_dir - start directory count
+# $_max_depth - Использование: $0 <директория> <максимальный_уровень_вложенности>
+# $_size_filter - Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб
+# $_name_filter - Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени
 display_disk_usage() {
-    echo -e "\nAnalyze disk usage:"
-    df -h /
+    info "Analyze disk usage..."
+    _dir="$1"
+    _max_depth="${2:-}"
+    _size_filter="${3:-}"
+    _name_filter="${4:-}"
 
-    local dir="$1"
-    local max_depth="$2"
-    local size_filter="$3"
-    local name_filter="$4"
-    
+    df -h $_dir
+
     # Проверка аргументов
-    if [ -z "$dir" ] || [ -z "$max_depth" ]; then
+    if [ -z "$_dir" ] || [ -z "$_max_depth" ]; then
         echo "Использование: $0 <директория> <максимальный_уровень_вложенности>"
         echo "Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб"
         echo "Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени"
         return 1
     fi
-    if [ ! -d "$dir" ]; then
-        echo "Ошибка: Директория $dir не существует"
+    if [ ! -d "$_dir" ]; then
+        echo "Ошибка: Директория $_dir не существует"
         return 1
     fi
 
-    time python3 find.py "$dir" "$max_depth" "$size_filter" "$name_filter" | while read -r line; do
+    python3 ${SCRIPT_DIR}/find.py "$_dir" "$_max_depth" "$_size_filter" "$_name_filter" | while read -r line; do
         echo "$line"
     done
 }
 
 
+# shellcheck disable=SC2120
 main() {
     # Проверка прав суперпользователя
     if [ "$EUID" -ne 0 ]; then
-        echo "Пожалуйста, запустите этот скрипт с правами суперпользователя:"
-        echo "sudo $0 $*"
+        warning "Пожалуйста, запустите этот скрипт с правами суперпользователя: \n sudo ${0} ${*}"
         exit 1
     fi
 
-    echo "Remove apt and another old and garbage, temporary, logs"
+    info "Remove apt and another old and garbage, temporary, logs"
     askExit
     df -h /
-    
+
     apt autoremove -y --purge
-    apt clean -y
-    apt autoclean -y
 
+    info "[ start ] APT packages cache cleanup..." 10
+    du -sh /var/cache/apt
+    # sudo rm -rf /var/cache/apt/*
+    apt autoclean
+    apt -s clean
+    du -sh /var/cache/apt
+    success "[ finished ] APT packages cache cleanup..." 10
 
-    # Removes old revisions of snaps
-    # CLOSE ALL SNAPS BEFORE RUNNING THIS
-    set -eu
-    snap list --all | awk '/disabled/{print $1, $3}' | \
+    info "[ start ] snapd cache cleaning..." 10
+    du -sh /var/lib/snapd/snaps
+    snap list --all | awk '/disabled/{print $1, $3}' |
         while read snapname revision; do
             snap remove "$snapname" --revision="$revision"
         done
+    du -sh /var/lib/snapd/snaps
+    success "[ finished ] snapd cache cleaning..." 10
 
-    echo "Removing old kernels..."
-    current_kernel=$(uname -r | sed "s/-generic//")
-    dpkg -l 'linux-*' | sed "/^ii/!d;/"$current_kernel"/d;s/^[^ ]* [^ ]* \([^ ]*\).*/\1/;/[0-9]/!d" | xargs apt-get -y purge
+    info "[ start ] flatpak cleaning..." 10
+    du -sh /var/lib/flatpak/app /var/lib/flatpak/repo ~/.local/share/flatpak 2>/dev/null || echo "No flatpaks found"
+    flatpak uninstall --unused -y
+    sudo flatpak repair
+    sudo rm -rf /var/tmp/flatpak-cache-*
+    du -sh /var/lib/flatpak/app /var/lib/flatpak/repo ~/.local/share/flatpak 2>/dev/null || echo "No flatpaks found"
+    du -sh ~/.cache/flatpak/
+    success "[ finished ] flatpak cleaning..." 10
 
+    info "[ start ] Removing old kernels..." 10
+    _current_kernel=$(uname -r | sed "s/-generic//")
+    # TODO: check sed "/^ii/!d;/${_current_kernel}/d;s/^[^ ]* [^ ]* \([^ ]*\).*/\1/;/[0-9]/!d" <- mb need in qutas "$_current_kernel"
+    dpkg -l 'linux-*' | sed "/^ii/!d;/${_current_kernel}/d;s/^[^ ]* [^ ]* \([^ ]*\).*/\1/;/[0-9]/!d" | xargs apt-get -y purge
+    success "[ finished ] Removing old kernels..." 10
+
+    info "[ start ] remove unnecessary files..." 10
     # Clear temporary files
-    echo "Clearing temporary files..."
-    rm -rf /tmp/*
-    rm -rf /var/tmp/*
-    rm -rf /etc/apk/cache/* /var/cache/* /var/lib/apt/lists/* /var/log/* /usr/share/doc/* /usr/share/man/*
-
+    info "Clearing temporary files..." 20
+    rm -rf /tmp/* /var/tmp/* /etc/apk/cache/* /var/cache/* /var/lib/apt/lists/* /var/log/* /usr/share/doc/* /usr/share/man/*
     # Empty trash
-    echo "Emptying trash..."
+    info "Emptying trash..." 20
     rm -rf ~/.local/share/Trash/*
-
     # Remove thumbnail cache
-    echo "Removing thumbnail cache..."
+    info "Removing thumbnail cache..." 20
     rm -rf ~/.cache/thumbnails/*
+    success "[ finished ] remove unnecessary files..." 10
 
-    LC_ALL=C dpkg -l | awk '/^rc/ {print $2}' | xargs sudo dpkg --purge --pending
+    info "[ start ] dpkg cleanup..." 10
+    LC_ALL=C dpkg -l | awk '/^rc/ {print $2}' | xargs sudo dpkg --purge
+    sudo dpkg --purge --pending
+    success "[ finished ] dpkg cleanup..." 10
 
-    #Removes old revisions of snaps
-    #CLOSE ALL SNAPS BEFORE RUNNING THIS
-    set -eu
-    LANG=en_US.UTF-8
-    snap list --all | awk '/disabled/{print $1, $3}' | while read snapname revision; do
-        echo "$snapname" "$revision"
-        snap remove "$snapname" --revision="$revision"
-    done
-
-
-    echo "journal systemd"
+    info "journal systemd" 20
     journalctl --disk-usage
     journalctl --vacuum-time=7d
+
+    warning "\nFor WSL u can use shrinking: 'wsl --shutdown; optimize-vhd -Path D:\vmx\wsl.ubuntu.desktop\ext4.vhdx -Mode full'"
 
     df -h /
 }
 
 
 # Функция для выполнения очистки файлов не входящих в пакеты Пакетного менеджера
+# shellcheck disable=SC2120
 cruftCln() {
-    # Проверка прав суперпользователя
+    # need superuser
     if [ "$EUID" -ne 0 ]; then
         echo "Пожалуйста, запустите этот скрипт с правами суперпользователя:"
-        echo "sudo $0 $*"
+        echo "sudo ${0} ${*}"
         exit 1
     fi
     echo "Поиск ненужных файлов..."
     askExit
-    
+
     # Получаем список ненужных файлов
     cruft_files=$(sed -n '/---- missing: dpkg ----/,/---- unexplained: \/ ----/{
   /---- missing: dpkg ----/d
@@ -113,7 +135,7 @@ cruftCln() {
   p
 }' cruft.log | grep -v '^end\.$')
     echo "$cruft_files" > cruft-mis-dpkg.log
-    
+
     # Подсчет общего освобождаемого пространства
     total_space=0
     echo "$cruft_files" | while read -r file; do
@@ -124,7 +146,7 @@ cruftCln() {
             fi
         fi
     done
-    
+
     # Конвертация размера в удобочитаемый формат
     if [ $total_space -lt 1024 ]; then
         echo "Общее освобождаемое пространство: $total_space байт"
@@ -135,11 +157,11 @@ cruftCln() {
     else
         echo "Общее освобождаемое пространство: $(echo "scale=2; $total_space/1073741824" | bc) ГБ"
     fi
-    
+
     # Подтверждение очистки
     echo "Вы уверены, что хотите выполнить очистку? (y/n)"
     read -r confirm
-    
+
     if [ "$confirm" = "y" ]; then
         echo "$cruft_files" | while read -r file; do
             if [ -e "$file" ]; then
@@ -165,50 +187,103 @@ cruftAnal() {
 }
 
 dockerCln() {
-    echo "Clean up docker files"
+    info "[start] Clean up docker files"
     askExit
 
-    docker system prune --all --volumes
-    docker image prune --all
-    docker container prune
+    _docker=$(which docker)
+    case "$_docker" in
+        /home/*)
+            info "docker system prune --all --volumes >" 5
+            docker system prune --all --volumes
+            info "docker image prune --all >"5
+            docker image prune --all
+            info "docker container prune >" 5
+            docker container prune
 
-    docker system df
-    docker volume prune
-    docker buildx prune --all
-}
-
-askExit() {
-    echo -e "\nStop? [y/n]"
-    read -r answer
-    if [ "$answer" = "y" ]; then exit 0; fi
-}
-
-
-while true; do
-    # Display menu
-    echo -e "\nДобро пожаловать в скрипт очистки ненужных файлов!"
-    echo "Please select a function to execute:"
-    echo -e "\e[31m\t1)\e[32m calculate disk usage"
-    echo -e "\e[31m\t2)\e[32m main"
-    echo -e "\e[31m\t3)\e[32m docker"
-    echo -e "\e[31m\t4)\e[32m cruft cleanup from 'missing: dpkg' group"
-    echo -e "\e[31m\t5)\e[32m cruft analyze"
-    echo -e "\e[31m\t6)\e[32m compact FS"
-    echo -e "\e[31m\t7)\e[32m exit"
-    echo -e "\e[0m"
-    # Read user input
-    read -p "Enter a number: " choice
-    echo ""
-
-    # Execute the chosen function
-    case $choice in
-        1) display_disk_usage  "/" "1" ">1G" ;;
-        2) main ;;
-        3) sudo -u "$SUDO_USER" bash -c "$(declare -f dockerCln); dockerCln" ;;
-        4) cruftCln ;;
-        5) cruftAnal ;;
-        6) e4defrag /dev/* ;;
-        7) exit 0 ;;
-        *) echo "Invalid input. Please enter a number from the list above" ;;
+            info "docker system df >" 5
+            docker system df
+            info "docker volume prune >" 5
+            docker volume prune
+            info "docker buildx prune --all >" 5
+            docker buildx prune
+            ;;
+        *)
+            info "docker system prune --all --volumes >" 5
+            sudo docker system prune --all --volumes
+            info "docker image prune --all >"5
+            sudo docker image prune --all
+            info "docker container prune >" 5
+            sudo docker container prune
+            
+            info "docker system df >" 5
+            sudo docker system df
+            info "docker volume prune >" 5
+            sudo docker volume prune
+            info "docker buildx prune --all >" 5
+            sudo docker buildx prune
+            ;;
     esac
-done
+
+    success "[finish] Clean up docker files"
+}
+
+
+#region --- for the interactive menu ---
+compact() {
+    handler 'e4defrag /dev/*' "Defragmentation disks"
+
+    powershell.exe -Command "Compact /U /F R:\Temp\ext4.vhdx"
+    powershell.exe -Command "optimize-vhd -Path R:\temp\ext4.vhdx -Mode full"
+}
+disk_usage() {
+    echo "Put your arguments:"
+    echo "_dir - start directory count"
+    echo "_max_depth - Использование: 0 <директория> <максимальный_уровень_вложенности>"
+    echo "_size_filter - Пример фильтра: '>2G' для размера больше 2 Гб, '<100M' для размера меньше 100 Мб"
+    echo "_name_filter - Пример фильтра имени: 'documents' для директорий, содержащих 'documents' в имени"
+    echo "Example: / 1 >1G"
+    read ":" args
+    echo ""
+    set -- $args
+
+    display_disk_usage "${1:-}" "${2:-}" "${3:-}" "${4:-}"
+}
+#endregion ======
+
+
+_arg="${1:-}"
+case "${_arg}" in
+    clean) main ;;
+    disk_usage) display_disk_usage  "/" "1" ">1G" ;;
+    compact) compact ;;
+
+    *)
+        while true; do
+            # Display menu
+            echo "\nДобро пожаловать в скрипт очистки ненужных файлов!"
+            echo "Please select a function to execute:"
+            echo "$RED\t 1) $GREEN calculate disk usage"
+            echo "$RED\t 2) $GREEN main cleanup function"
+            echo "$RED\t 3) $GREEN GC docker's waste products"
+            echo "$RED\t 4) $GREEN cruft cleanup from 'missing: dpkg' group"
+            echo "$RED\t 5) $GREEN cruft analyze"
+            echo "$RED\t 6) $GREEN compact FS"
+            echo "$RED\t 7) $GREEN exit"
+            echo "$NC"
+            # Read user input
+            read -p "Enter a number: " choice
+            echo ""
+
+            # Execute the chosen function
+            case $choice in
+                1) disk_usage ;;
+                2) main ;;
+                3) dockerCln ;;
+                4) cruftCln ;;
+                5) cruftAnal ;;
+                6) compact ;;
+                7) exit 0 ;;
+                *) echo "Invalid input. Please enter a number from the list above" ;;
+            esac
+        done ;;
+esac

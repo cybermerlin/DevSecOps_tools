@@ -1,0 +1,141 @@
+services:
+  # APT Cache (Debian/Ubuntu/Alpine/etc)
+  # https://qmacro.org/blog/posts/2024/09/03/setting-up-a-cache-server-for-apt-packages/
+  registry_apt:
+    # image: sameersbn/apt-cacher-ng
+    build:
+      context: ./acng
+      dockerfile: Dockerfile
+      args:
+        - PUID=${PUID:-1000}
+        - PGID=${PGID:-1000}
+        - TZ=Europe/Moscow
+    container_name: registry_apt
+    restart: unless-stopped
+    ports:
+      - "3142:3142"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=Europe/Moscow
+      - APT_PROXY_URL="${APT_PROXY_URL}" # need to use in "healthcheck.test"
+      - CACHE_DIR=/var/cache/apt-cacher-ng
+      - LOG_DIR=/var/log/apt-cacher-ng
+      - ENABLE_LOG=1
+      - MODE=proxy
+      - ALLOW_USER_PORTS=1
+      - ALLOW_HOSTS=*
+      - MAX_STANDBY=256
+      - MAX_PRE_CACHE=50
+      - PRE_CACHE_PATTERNS=alpine/*  # Enable precaching for Alpine
+      - PRE_CACHE_SCAN_DEPTH=2
+      - PRE_CACHE_STARTUP=1
+    volumes:
+      - apt_cache:/var/cache/apt-cacher-ng
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - registry_network
+    healthcheck:
+      test: ["CMD", "wget -q -t1 -O /dev/null ${APT_PROXY_URL}/acng-report.html || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 4
+      start_period: 60s
+
+  # NPM Registry (Verdaccio v6)
+  registry_npm:
+    image: verdaccio/verdaccio:6 # v6 is the 2025 standard
+    container_name: registry_npm
+    restart: unless-stopped
+    ports:
+      - "4873:4873"
+    volumes:
+      - verdaccio_storage:/verdaccio/storage
+    networks:
+      - registry_network
+
+  # PyPI Registry (devpi)
+  # https://github.com/muccg/docker-devpi
+  # registry_pypi:
+  #   image: muccg/devpi
+  #   container_name: registry_pypi
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3141:3141"
+  #   environment:
+  #     - DEVPI_PASSWORD=${DEVPI_PASSWORD:-changeme} # Use env vars for security
+  #   volumes:
+  #     - /etc/timezone:/etc/timezone:ro
+  #     - devpi_data:/data
+  #   networks:
+  #     - registry_network
+
+  # Docker Registry (Configured as Pull-Through Cache)
+  registry_docker:
+    image: registry:3
+    container_name: registry_docker
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    volumes:
+      - ./docker/config.yml:/etc/docker/registry/config.yml
+      - docker_registry:/var/lib/registry
+    networks:
+      - registry_network
+  registry_ui:
+    image: joxit/docker-registry-ui:main
+    container_name: registry_ui
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      - REGISTRY_URL=http://localhost:5000
+      - DELETE_IMAGES=true
+      - SINGLE_REGISTRY=true
+      - REGISTRY_TITLE="Local Docker Registry"
+    depends_on:
+      - registry_docker
+    networks:
+      - registry_network
+
+networks:
+  registry_network:
+    driver: bridge
+    name: registry_network
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+        - subnet: fd00:d0ca:2::/64
+
+volumes:
+  apt_cache:
+    # external: true
+    driver: local
+    driver_opts:
+      type: none
+      device: ${WSL_VLM}/apt_cache
+      o: bind
+  verdaccio_storage:
+    # external: true
+    driver: local
+    driver_opts:
+      type: none
+      device: ${WSL_VLM}/verdaccio_storage
+      o: bind
+  devpi_data:
+    # external: true
+    driver: local
+    driver_opts:
+      type: none
+      device: ${WSL_VLM}/devpi_data
+      o: bind
+  docker_registry:
+    # external: true
+    driver: local
+    driver_opts:
+      type: none
+      device: ${WSL_VLM}/docker_registry
+      o: bind
