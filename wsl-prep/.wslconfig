@@ -1,0 +1,26 @@
+[wsl2]
+safeMode=true
+swap=0
+memory=8GB
+processors=14
+kernelCommandLine = cgroup_no_v1=all
+defaultVhdSize = 55GB
+guiApplications = true
+nestedVirtualization=true
+
+localhostForwarding=true
+dnsTunneling=true
+dnsProxy=false
+firewall = true
+vmSwitch="WSL"
+dhcp=false
+macAddress=5c:bb:f6:9e:ee:55
+ipv6=true
+
+[experimental]
+sparseVhd = true
+autoMemoryReclaim = dropcache
+dnsTunnelingIpAddress=9.9.9.9
+useWindowsDnsCache=true
+bestEffortDnsParsing=true
+hostAddressLoopback=true
