@@ -2,7 +2,6 @@ services:
   # APT Cache (Debian/Ubuntu/Alpine/etc)
   # https://qmacro.org/blog/posts/2024/09/03/setting-up-a-cache-server-for-apt-packages/
   registry_apt:
-    # image: sameersbn/apt-cacher-ng
     build:
       context: ./acng
       dockerfile: Dockerfile
@@ -10,6 +9,7 @@ services:
         - PUID=${PUID:-1000}
         - PGID=${PGID:-1000}
         - TZ=Europe/Moscow
+        - APT_PROXY_URL=${APT_PROXY_URL}
     container_name: registry_apt
     restart: unless-stopped
     ports:
@@ -116,7 +116,7 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: ${WSL_VLM}/apt_cache
+      device: ${HST_VLM}/apt_cache
       o: bind
   verdaccio_storage:
     # external: true

@@ -13,7 +13,8 @@ set +u; [ -n "$ROOT" ] || export ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)";
 . "${ROOT}/common/handler.sh"
 
 _USERPROFILE=$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null)" | tr -d '\r')
-
+_lvl=5
+_UID=$(id -u)
 
 fixnetwork() {
   ping ya.ru -A -c 3 >/dev/null || { echo 'fixing...'; echo "nameserver 9.9.9.9" | sudo tee /etc/resolv.conf; }
@@ -151,17 +152,24 @@ upgrade() {
     reset_wo_reboot
     progress_bar 80 "Обновление завершено"
 
-    warning "Please reboot this system ('wsl --shutdown' in powershell) \n AND restart this _cmd: `./ubuntu_upgrade.sh upgrade`"
+    warning "Please reboot this system ('wsl --shutdown' in powershell) \n AND restart this _cmd: './ubuntu_upgrade.sh upgrade'"
   fi
 }
 
 git_prep() {
-  info "Check and generate ssh keys for git" 20
+  # region git_prep() {
+  info "Check and generate ssh keys for git"
   mkdir -p ~/.ssh
   . "${ROOT}/secrets/secrets.sh"
-  ([ -d "${ROOT}/secrets" ] && cp -r "${ROOT}/secrets/.ssh/*" ~/.ssh/) || ssh-keygen -t rsa -b 4096 -C "${useremail}" -N "" -f ~/.ssh/github;
+  ([ -d "${ROOT}/secrets" ] && cp -rf "${ROOT}/secrets/.ssh/"* ~/.ssh/) \
+    || ( echo 'n' | ssh-keygen -t rsa -b 4096 -C "${useremail}" -N "" -f ~/.ssh/github)
+  sudo chown -R ${_UID}:${_UID} ~/.ssh
+  chmod 600 ~/.ssh/github
+  chmod 644 ~/.ssh/github.pub
+  chmod 700 ~/.ssh
 
-  info "Configuring git Credential Manager" 20
+
+  info "Configuring git Credential Manager"
   git config --global user.email "${useremail}"
   git config --global user.name "${username}"
   git config --global credential.credentialStore cache
@@ -170,18 +178,16 @@ git_prep() {
   git config --global credential.gitHubAccountFiltering "false"
   git config --global credential.gitLabAuthModes "browser"
   git config --global init.defaultBranch master
+  git config --global push.autoSetupRemote true
 
-  if [ -z "$(pgrep -a ssh-agent)" ]; then
-    info "running ssh-agent service..." 20
+  if ! pgrep -a ssh-agent; then
+    info "running ssh-agent service..."
 
-    if [ -z "$(systemctl --user list-unit-files | grep ssh)" ]; then
-      info "making ssh-agen.service..." 20;
+    if ! systemctl --user list-unit-files | grep ssh; then
+      info "Creating systemd user ssh-agen.service..." 5
 
       mkdir -p ~/.config/systemd/user/
-      _TMPDIR=$(mktemp -d)
-      touch "$_TMPDIR/sshass"
-      trap 'rm -rf "$_TMPDIR"' EXIT
-      tee "$_TMPDIR/sshass" <<EOF
+      cat > "${HOME}/.config/systemd/user/ssh-agent.service" <<'EOF'
 [Unit]
 Description=SSH key agent
 Wants=default.target
@@ -194,29 +200,33 @@ ExecStart=/usr/bin/ssh-agent -D -a $SSH_AUTH_SOCK
 [Install]
 WantedBy=default.target
 EOF
-      tee ~/.config/systemd/user/ssh-agent.service > /dev/null < "${_TMPDIR}/sshass"
-      systemctl --user enable ssh-agent
-      systemctl --user start ssh-agent
+      systemctl --user daemon-reload
+      systemctl --user enable --now ssh-agent
+      sleep 1
     fi
 
     # Auto SSH-AUTH_SOCK setup
-    if [ -z "$SSH_AUTH_SOCK" ]; then
-        info "have no SSH_AUTH_SOCK" 20
+    if [ -z "${SSH_AUTH_SOCK+isset}" ]; then
+        info "No SSH_AUTH_SOCK set, configuring..." 5
         # Try XDG_RUNTIME_DIR first (systemd user service)
-        if [ -n "$XDG_RUNTIME_DIR" ] && [ -S "$XDG_RUNTIME_DIR/ssh-agent.socket" ]; then
-            info 'have no $XDG_RUNTIME_DIR/ssh-agent.socket' 20
-            export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+        if [ -n "${XDG_RUNTIME_DIR}" ] && [ -S "${XDG_RUNTIME_DIR}/ssh-agent.socket" ] 2> /dev/null; then
+            export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
         # Try to find any existing ssh-agent socket
-        elif sockets=$(find /tmp/ssh-* -user "$USER" -name "agent.*" 2>/dev/null); then
-            export SSH_AUTH_SOCK="$(echo "$sockets" | head -n1)"
+        elif sockets=$(find /tmp/ssh-* -maxdepth 2 -user "${USER}" -name "agent.*" -type s 2>/dev/null | head -1); then
+            export SSH_AUTH_SOCK="$sockets"
+            info "Using existing socket: $SSH_AUTH_SOCK" 10
         # Fallback: start new agent if nothing found
-        # else
-        #     eval "$(ssh-agent -s)" > /dev/null
+        else
+            info "Starting fallback ssh-agent..." 10
+            eval "$(ssh-agent -s)" > /dev/null
         fi
     fi
-    # eval "$(ssh-agent -s)"
   fi
-  eval "$(ssh-agent -s)" && ssh-add ~/.ssh/github
+  ssh-add ~/.ssh/github 2> /dev/null || true
+  git fetch || eval "$(ssh-agent -s)"
+  git fetch
+  success "GIT configured and ready to use."
+  # endregion git_prep() {
 }
 
 inst_base() {
@@ -227,7 +237,15 @@ inst_base() {
   flatpak install flathub git mc screen plocate || { exit 1; }
   sudo updatedb&
   handler 'git_prep' "Prepare Git..." 10
+  handler 'inst_registry' 'Install local registry under proxy...' 10
   handler 'clean main' "Cleaning after installation" 10
+}
+
+inst_registry() {
+  "${ROOT}/registry/run.sh" conf apply
+  "${ROOT}/registry/run.sh" conf check || {
+    error "Need install the Registry: 'wsl -d Ubuntu2 -- /bin/bash -ls \"~/dev/admin/DevSecOps_tools/registry/run.sh install\"'"
+  }
 }
 
 # how to use more isolations for apps [too old?]
@@ -393,8 +411,7 @@ case "${1:-}" in
       handler 'upgrade' "Upgrade"
       info "Next step ->upgrade() and then ->inst()"
       ;;
-  inst)
-      handler 'inst_base' "Install base packages" || { error "Try to use '-> fix()'"; exit 1; };;
+  inst) handler 'inst_base' "Install base packages" || { error "Try to use '-> fix()'"; exit 1; };;
 
   clean) handler 'clean' "Clean up" ;;
 
@@ -404,7 +421,27 @@ case "${1:-}" in
   nat) handler 'setAsNAT' 'Run [setAsNAT] to preset this system as NAT router' ;;
   wslconf) handler 'wslconfiguration' 'Run copying .wslconfig to win-host' ;;
   fixnetwork) handler 'fixnetwork' 'Run fix network';;
+  
   test) handler "test ${2}" "Run test";;
 
-  *) warning 'Undefined parameter';;
+  *)
+    error "Usage:";
+    justSay "  $0 full" $_lvl
+    justSay "  $0 prep" $_lvl
+    justSay "  $0 fix" $_lvl
+    justSay "  $0 upgrade" $_lvl
+    justSay "  $0 inst" $_lvl
+    echo ''
+    justSay "  $0 clean" $_lvl
+    echo ''
+    justSay "  $0 inst_registry" $_lvl
+    justSay "  $0 inst_code" $_lvl
+    justSay "  $0 gitprep" $_lvl
+    justSay "  $0 nat" $_lvl
+    justSay "  $0 wslconf" $_lvl
+    justSay "  $0 fixnetwork" $_lvl
+    echo ''
+    justSay "  $0 test [opt]" $_lvl
+    exit 2
+    ;;
 esac

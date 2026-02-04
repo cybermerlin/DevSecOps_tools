@@ -20,7 +20,7 @@ handler() {
   if _out=$(eval "$_cmd 2>&1"); then
     success "[ finished ]: $_description... [${_cmd}]" "${_lvl}"
   else
-    error "[ failed ]: $_description... [${_cmd}] :-{\n\t'${_out}'" "${_lvl}"
+    error "[ failed ]: $_description... [${_cmd}] :-{\n\t${_out}" "${_lvl}"
     return 1
   fi
 }
